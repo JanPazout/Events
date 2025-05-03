@@ -1,0 +1,129 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'Rodinné Události - Czech Family Events Web Application'
+
+Parameters:
+  AppName:
+    Type: String
+    Default: rodinne-udalosti
+    Description: Application name used for resource naming
+
+Resources:
+  # S3 Bucket for Frontend
+  AppBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub ${AppName}-${AWS::AccountId}
+      WebsiteConfiguration:
+        IndexDocument: index.html
+        ErrorDocument: index.html
+      CorsConfiguration:
+        CorsRules:
+          - AllowedHeaders: ['*']
+            AllowedMethods: [GET]
+            AllowedOrigins: ['*']
+            MaxAge: 3000
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: false
+        BlockPublicPolicy: false
+        IgnorePublicAcls: false
+        RestrictPublicBuckets: false
+
+  # S3 Bucket Policy
+  AppBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref AppBucket
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal: '*'
+            Action: 's3:GetObject'
+            Resource: !Sub 'arn:aws:s3:::${AppBucket}/*'
+
+  # EC2 Security Group
+  ServerSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Security group for family events server
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          CidrIp: 0.0.0.0/0
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: 0.0.0.0/0
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          CidrIp: 0.0.0.0/0
+        - IpProtocol: tcp
+          FromPort: 3000
+          ToPort: 3000
+          CidrIp: 0.0.0.0/0
+
+  # EC2 Instance
+  ServerInstance:
+    Type: AWS::EC2::Instance
+    Properties:
+      InstanceType: t2.micro
+      SecurityGroups:
+        - !Ref ServerSecurityGroup
+      ImageId: ami-0261755bbcb8c4a84  # Amazon Linux 2023 AMI (modify as needed for your region)
+      UserData:
+        Fn::Base64: !Sub |
+          #!/bin/bash
+          yum update -y
+          yum install -y nodejs git
+          mkdir -p /home/ec2-user/app
+          cd /home/ec2-user/app
+          git clone https://github.com/yourusername/czech-family-events.git .
+          npm install
+          npm run build
+          mkdir -p data
+          NODE_ENV=production nohup node server/index.js > server.log 2>&1 &
+      Tags:
+        - Key: Name
+          Value: !Sub ${AppName}-server
+
+  # CloudFront Distribution
+  CloudFrontDistribution:
+    Type: AWS::CloudFront::Distribution
+    Properties:
+      DistributionConfig:
+        Origins:
+          - DomainName: !GetAtt AppBucket.RegionalDomainName
+            Id: S3Origin
+            S3OriginConfig:
+              OriginAccessIdentity: ''
+        Enabled: true
+        DefaultRootObject: index.html
+        DefaultCacheBehavior:
+          TargetOriginId: S3Origin
+          ForwardedValues:
+            QueryString: false
+            Cookies:
+              Forward: none
+          ViewerProtocolPolicy: redirect-to-https
+        PriceClass: PriceClass_100
+        ViewerCertificate:
+          CloudFrontDefaultCertificate: true
+        CustomErrorResponses:
+          - ErrorCode: 404
+            ResponseCode: 200
+            ResponsePagePath: /index.html
+
+Outputs:
+  WebsiteURL:
+    Description: URL of the website
+    Value: !GetAtt AppBucket.WebsiteURL
+
+  CloudFrontURL:
+    Description: CloudFront URL
+    Value: !Sub https://${CloudFrontDistribution.DomainName}
+
+  ServerPublicIP:
+    Description: Public IP of the server
+    Value: !GetAtt ServerInstance.PublicIp
